@@ -1,0 +1,38 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python bot.py"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10
+
+[environments.production]
+[environments.production.variables]
+PYTHONUNBUFFERED = "1"
+PAPER_TRADING    = "true"
+
+# ── Coin universe ─────────────────────────────────────────────────────────────
+# WATCHLIST is the always-scanned core of 20 majors (thin KuCoin volume is fine);
+# DYNAMIC_DISCOVERY tops it up to MAX_PAIRS with liquid (>=MIN_VOLUME_USDT),
+# established (>=MIN_PAIR_AGE_DAYS history), non-blacklisted pairs — which keeps
+# fresh pump listings out.
+WATCHLIST         = "BTC/USDT,ETH/USDT,BNB/USDT,SOL/USDT,XRP/USDT,DOGE/USDT,ADA/USDT,AVAX/USDT,LINK/USDT,DOT/USDT,LTC/USDT,BCH/USDT,NEAR/USDT,UNI/USDT,ATOM/USDT,APT/USDT,OP/USDT,ARB/USDT,SUI/USDT,TIA/USDT"
+DYNAMIC_DISCOVERY = "true"
+MAX_PAIRS         = "35"
+MIN_VOLUME_USDT   = "10000000"
+MIN_PAIR_AGE_DAYS = "300"
+
+# ── Timeframes fed to generate_signal ─────────────────────────────────────────
+ENTRY_TF          = "15m"
+CONFIRM_TF        = "1h"
+TREND_TF          = "4h"
+BIAS_TF           = "1d"
+
+# ── Loop + analytics segmentation ─────────────────────────────────────────────
+SCAN_INTERVAL_SEC = "900"
+RUN_TAG           = "v1"
+
+# DATABASE_URL is injected by the Railway PostgreSQL addon.
+# TG_TOKEN / TG_CHAT_ID: set as secrets to enable /edge + /diagnose over Telegram.
+# Strategy/execution env vars (MIN_CONFIDENCE, sizing, etc.) go here once you
+# wire them in strategy.py / your own execution layer.
