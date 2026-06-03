@@ -15,6 +15,7 @@ env/
 # Logs / scratch
 *.log
 /tmp/
+guardrail_status.txt
 
 # OS
 .DS_Store

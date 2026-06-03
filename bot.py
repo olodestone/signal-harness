@@ -31,6 +31,7 @@ import performance as perf
 import notify
 import analytics
 import telegram_commands
+import guardrail
 from strategy import generate_signal
 
 # ── In-memory signal dedup ──────────────────────────────────────────────────
@@ -151,6 +152,11 @@ def main() -> None:
             _scan_once()
         except Exception as e:
             print(f"[bot] Main loop error: {e}", flush=True)
+        # Kill-switch: pause new signals if the live trailing edge is statistically dead.
+        try:
+            guardrail.check_and_maybe_pause(paused)
+        except Exception as e:
+            print(f"[bot] guardrail error: {e}", flush=True)
         print(f"[bot] Sleeping {config.SCAN_INTERVAL_SEC}s …\n", flush=True)
         stopping.wait(config.SCAN_INTERVAL_SEC)
 
