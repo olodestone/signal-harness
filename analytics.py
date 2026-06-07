@@ -161,7 +161,8 @@ def populate_outcomes(paper: bool = True, limit: int = 20) -> int:
     """
     with perf._cur() as cur:
         cur.execute("""
-            SELECT id, pair, direction, entry, sl, tp, rr, signal_time, price_at_gen
+            SELECT id, pair, direction, entry, sl, tp, rr, signal_time, price_at_gen,
+                   confidence, trade_type, run_tag, trade_id
             FROM signal_log
             WHERE paper = %s
               AND stage = 'expired'
@@ -188,15 +189,19 @@ def populate_outcomes(paper: bool = True, limit: int = 20) -> int:
                 # Paper: also resolve the execution funnel. stage stays 'expired' so
                 # the setup-quality counterfactual (Layer 3) is preserved; reports
                 # read fills off the `filled` column, win/loss off `outcome`/`pnl_usd`.
+                # On a fill, also write a closed trades row (Layer 4) and link it.
+                trade_id = None
+                if exec_["filled"] == 1 and not row.get("trade_id"):
+                    trade_id = _insert_paper_trade(cur, row, exec_)
                 cur.execute("""
                     UPDATE signal_log
                     SET entry_reached=%s, tp1_reached=%s, sl_reached=%s, setup_outcome=%s,
-                        filled=%s, outcome=%s, pnl_usd=%s
+                        filled=%s, outcome=%s, pnl_usd=%s, trade_id=COALESCE(trade_id, %s)
                     WHERE id=%s
                 """, (
                     result["entry_reached"], result["tp1_reached"],
                     result["sl_reached"], result["setup_outcome"],
-                    exec_["filled"], exec_["outcome"], exec_["pnl_usd"],
+                    exec_["filled"], exec_["outcome"], exec_["pnl_usd"], trade_id,
                     row["id"],
                 ))
             else:
@@ -246,6 +251,39 @@ def _paper_exec_fields(result: Dict, rr: float, paper: bool) -> Dict:
     return {"filled": 1, "outcome": outcome, "pnl_usd": round(pnl, 2)}
 
 
+_PAPER_TRADE_STATUS = {"tp": "closed_tp", "sl": "closed_sl", "time_stop": "closed_manual"}
+
+
+def _insert_paper_trade(cur, row: Dict, exec_: Dict) -> Optional[int]:
+    """Insert a CLOSED paper trade mirroring the funnel resolution, so /diagnose
+    Layer 4 (trades-table execution) populates. P&L is taken verbatim from `exec_`
+    so the trades row and the signal_log funnel can never disagree. Returns new id.
+
+    open_time/close_time are both set to signal_time — the 1h replay doesn't track
+    the exact fill/close instant, and Layer 4 keys off P&L/status, not duration.
+    """
+    outcome = exec_["outcome"]
+    entry, sl, tp = float(row["entry"]), float(row["sl"]), float(row["tp"])
+    close_price = tp if outcome == "tp" else (sl if outcome == "sl" else entry)
+    risk_usd = config.ACCOUNT_CAPITAL * config.MAX_RISK_PER_TRADE
+    risk_per_unit = abs(entry - sl)
+    qty = round(risk_usd / risk_per_unit, 8) if risk_per_unit > 0 else 0.0
+    st = str(row["signal_time"])
+    cur.execute("""
+        INSERT INTO trades
+          (pair, direction, entry, sl, tp, rr, qty, risk_usd, strategy, confidence,
+           status, open_time, close_time, close_price, pnl_usd, paper, fill_time, run_tag)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        RETURNING id
+    """, (
+        row["pair"], row["direction"], entry, sl, tp, float(row.get("rr") or 0.0),
+        qty, round(risk_usd, 2), row.get("trade_type"), row.get("confidence"),
+        _PAPER_TRADE_STATUS[outcome], st, st, close_price, exec_["pnl_usd"],
+        1, st, row.get("run_tag"),
+    ))
+    return cur.fetchone()["id"]
+
+
 def backfill_paper_fills(paper: bool = True) -> int:
     """One-shot, idempotent: populate the paper-execution funnel
     (filled/outcome/pnl_usd) for signals that were already setup-resolved BEFORE
@@ -256,7 +294,9 @@ def backfill_paper_fills(paper: bool = True) -> int:
         return 0
     with perf._cur() as cur:
         cur.execute("""
-            SELECT id, rr, entry_reached, tp1_reached, sl_reached
+            SELECT id, pair, direction, entry, sl, tp, rr, signal_time,
+                   confidence, trade_type, run_tag, trade_id,
+                   entry_reached, tp1_reached, sl_reached
             FROM signal_log
             WHERE paper = %s AND setup_outcome IS NOT NULL AND filled IS NULL
         """, (int(paper),))
@@ -271,9 +311,13 @@ def backfill_paper_fills(paper: bool = True) -> int:
         if not exec_:
             continue
         with perf._cur() as cur:
+            trade_id = None
+            if exec_["filled"] == 1 and not row.get("trade_id"):
+                trade_id = _insert_paper_trade(cur, row, exec_)
             cur.execute(
-                "UPDATE signal_log SET filled=%s, outcome=%s, pnl_usd=%s WHERE id=%s",
-                (exec_["filled"], exec_["outcome"], exec_["pnl_usd"], row["id"]),
+                "UPDATE signal_log SET filled=%s, outcome=%s, pnl_usd=%s, "
+                "trade_id=COALESCE(trade_id, %s) WHERE id=%s",
+                (exec_["filled"], exec_["outcome"], exec_["pnl_usd"], trade_id, row["id"]),
             )
         updated += 1
     return updated
@@ -859,7 +903,7 @@ def build_diagnose(paper: bool, run_tag: Optional[str] = None) -> str:
             lines.append(f"  Win when hit: ⏳ need {_N_ENTRY_HIT - n_hit} more entry-hit signals")
 
     # ── Layer 4: Execution ────────────────────────────────────────────────────
-    lines.append("\n*Layer 4 — Execution (live closed trades)*")
+    lines.append("\n*Layer 4 — Execution (closed trades)*")
     n_exec  = int(exec_["total"] or 0)
     n_exw   = int(exec_["wins"] or 0)
     n_exl   = int(exec_["losses"] or 0)
