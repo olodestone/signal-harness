@@ -906,19 +906,29 @@ def build_diagnose(paper: bool, run_tag: Optional[str] = None) -> str:
     lines.append("\n*Layer 4 — Execution (closed trades)*")
     n_exec  = int(exec_["total"] or 0)
     n_exw   = int(exec_["wins"] or 0)
-    n_exl   = int(exec_["losses"] or 0)
     n_be    = int(exec_["be_wins"] or 0)
+    n_flat  = int(exec_["flats"] or 0)
     avg_pnl = float(exec_["avg_pnl"] or 0)
     be_chk  = int(exec_["be_tp1_checked"] or 0)
     be_hit  = int(exec_["be_tp1_hit"] or 0)
 
+    # Flat $0 scratches that aren't BE wins (i.e. time stops) are neither win nor
+    # loss — exclude them from the win-rate denominator rather than counting them
+    # as losses. BE wins are also $0 but stay in (they're rescued into the numerator).
+    scratches = max(n_flat - n_be, 0)
+    decisive  = n_exec - scratches
+
     if n_exec < _N_EXEC:
         lines.append(f"  ⏳ Need {_N_EXEC - n_exec} more closed trades (have {n_exec})")
+    elif decisive == 0:
+        lines.append(f"  ⏳ All {n_exec} closed were scratches/time-stops — no decisive trades yet")
     else:
         w_be_total = n_exw + n_be
-        wr_pct = w_be_total / n_exec * 100
+        wr_pct = w_be_total / decisive * 100
         wr_icon = "✓" if wr_pct >= 50 else "✗"
-        lines.append(f"  Win rate (W+BE): {wr_icon} {wr_pct:.0f}% ({w_be_total}/{n_exec})")
+        lines.append(f"  Win rate (W+BE): {wr_icon} {wr_pct:.0f}% ({w_be_total}/{decisive} decisive)")
+        if scratches:
+            lines.append(f"  Scratch/time-stop: {scratches} (excluded from win rate)")
         if wr_pct < 50:
             issues_warn.append(f"execution win rate {wr_pct:.0f}%")
 

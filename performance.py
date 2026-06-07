@@ -750,7 +750,9 @@ def diagnose_execution_stats(paper: bool, run_tag: Optional[str] = None) -> Dict
             SELECT
                 COUNT(*)                                                               AS total,
                 SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END)                          AS wins,
-                SUM(CASE WHEN pnl_usd <= 0 THEN 1 ELSE 0 END)                         AS losses,
+                SUM(CASE WHEN pnl_usd < 0 THEN 1 ELSE 0 END)                          AS losses,
+                -- flat $0 scratches (time stops / BE stops) — neither win nor loss
+                SUM(CASE WHEN pnl_usd = 0 THEN 1 ELSE 0 END)                          AS flats,
                 -- BE wins: closed at SL but SL was moved to entry (pnl ≈ 0)
                 SUM(CASE WHEN status='closed_sl'
                           AND ABS(close_price - entry) / NULLIF(entry,0) < 0.005
