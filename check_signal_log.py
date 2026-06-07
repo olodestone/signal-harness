@@ -113,3 +113,72 @@ else:
                   "This switch can only ever prove the edge dead.")
         else:
             print(f"  -> {res['reason']}")
+
+# 7) WHY the trailing edge can't resolve — per-pair OHLCV store probe.
+#    evaluate() recomputes each trade's trailing exit from ENTRY_TF (15m) candles
+#    via backtest.store. If store.load() returns <60 bars for every pair, `loaded`
+#    is empty and evaluate() reports "insufficient resolved (0/N)" despite having
+#    the sample. This replays that exact load step and shows, per pair, what came
+#    back — turning an opaque 0/N into a concrete reason. (Hits the exchange once
+#    per failing pair, so it may take a moment.)
+print("\nstore resolution probe (why evaluate() resolves N rows):")
+try:
+    import exchange as ex
+    from backtest.store import OHLCVStore, now_ts, WARMUP_BARS, TF_SECONDS
+    from datetime import datetime as _dt, timezone as _tz
+
+    walk_tf = config.ENTRY_TF
+    with perf._cur() as cur:
+        cur.execute(
+            "SELECT pair, signal_time FROM signal_log "
+            "WHERE run_tag=%s AND paper=%s "
+            "AND signal_time::timestamp <= NOW() - INTERVAL '72 hours' "
+            "ORDER BY signal_time DESC LIMIT %s",
+            (RUN_TAG, PAPER, WINDOW),
+        )
+        probe_rows = [dict(r) for r in cur.fetchall()]
+
+    if len(probe_rows) < MIN_TRADES:
+        print(f"  -> only {len(probe_rows)}/{MIN_TRADES} matured rows; evaluate() stops "
+              f"at the sample gate before loading OHLCV. Nothing to probe yet.")
+    else:
+        pairs = sorted({r["pair"] for r in probe_rows})
+        tss = [guardrail._sig_ts(r) for r in probe_rows]
+        window_start = min(tss) - 86400
+        fetch_start = window_start - WARMUP_BARS * TF_SECONDS[walk_tf]
+        end = now_ts()
+        print(f"  tf={walk_tf}  pairs={len(pairs)}  window: "
+              f"{_dt.fromtimestamp(fetch_start, _tz.utc):%Y-%m-%d %H:%M} → "
+              f"{_dt.fromtimestamp(end, _tz.utc):%Y-%m-%d %H:%M} UTC")
+        print(f"  load() counts a pair only if it returns >=60 bars.\n")
+
+        store = OHLCVStore(0)
+        ok = 0
+        for p in pairs:
+            try:
+                loaded = store.load(p, window_start, end, tfs=(walk_tf,))
+            except Exception as e:
+                print(f"  {p:14} load()=RAISED  {e}")
+                continue
+            if loaded:
+                print(f"  {p:14} load()=OK")
+                ok += 1
+            else:
+                # load() bailed (None or <60 bars) — direct-fetch to show how many it saw.
+                try:
+                    df = ex.fetch_ohlcv_between(p, walk_tf, fetch_start, end, limit=5000)
+                    nbars = 0 if df is None else len(df)
+                except Exception as e:
+                    nbars = f"fetch error: {e}"
+                print(f"  {p:14} load()=FAIL   direct_fetch_bars={nbars}")
+
+        print(f"\n  -> {ok}/{len(pairs)} pairs loaded.")
+        if ok == 0:
+            print("  -> ALL failed → evaluate() resolves 0. Read direct_fetch_bars:")
+            print("       0          → symbol/fetch problem (KuCoin rejects the symbol/range)")
+            print("       1-59       → thin 15m history vs the >=60-bar gate")
+            print("       60+        → fetch is fine; the bug is downstream of load()")
+        else:
+            print("  -> some pairs load; evaluate() should resolve rows on the next run.")
+except Exception as e:
+    print(f"  -> probe error: {e}")
