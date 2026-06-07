@@ -16,6 +16,7 @@ import time
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, List, Any
 
+import config
 import performance as perf
 import exchange as ex
 
@@ -152,13 +153,15 @@ def populate_snapshots(paper: bool = True) -> int:
 
 def populate_outcomes(paper: bool = True, limit: int = 20) -> int:
     """
-    Walk 1h OHLCV for expired signals older than 72h to determine setup outcomes.
-    Idempotent — only processes rows where setup_outcome IS NULL.
-    Returns count of rows updated.
+    Walk 1h OHLCV for matured signals (>72h) to score setup outcomes, and — for
+    paper signals — resolve the deterministic paper-execution funnel (fill +
+    win/loss + P&L) from the same replay, so /edge & /diagnose populate fill rate,
+    win rate, EV and Total P&L without a live order book. Idempotent — only rows
+    where setup_outcome IS NULL. Returns count of rows updated.
     """
     with perf._cur() as cur:
         cur.execute("""
-            SELECT id, pair, direction, entry, sl, tp, signal_time, price_at_gen
+            SELECT id, pair, direction, entry, sl, tp, rr, signal_time, price_at_gen
             FROM signal_log
             WHERE paper = %s
               AND stage = 'expired'
@@ -179,20 +182,100 @@ def populate_outcomes(paper: bool = True, limit: int = 20) -> int:
         if result is None:
             continue
 
+        exec_ = _paper_exec_fields(result, float(row.get("rr") or 0.0), paper)
         with perf._cur() as cur:
-            cur.execute("""
-                UPDATE signal_log
-                SET entry_reached=%s, tp1_reached=%s, sl_reached=%s, setup_outcome=%s
-                WHERE id=%s
-            """, (
-                result["entry_reached"],
-                result["tp1_reached"],
-                result["sl_reached"],
-                result["setup_outcome"],
-                row["id"],
-            ))
+            if exec_:
+                # Paper: also resolve the execution funnel. stage stays 'expired' so
+                # the setup-quality counterfactual (Layer 3) is preserved; reports
+                # read fills off the `filled` column, win/loss off `outcome`/`pnl_usd`.
+                cur.execute("""
+                    UPDATE signal_log
+                    SET entry_reached=%s, tp1_reached=%s, sl_reached=%s, setup_outcome=%s,
+                        filled=%s, outcome=%s, pnl_usd=%s
+                    WHERE id=%s
+                """, (
+                    result["entry_reached"], result["tp1_reached"],
+                    result["sl_reached"], result["setup_outcome"],
+                    exec_["filled"], exec_["outcome"], exec_["pnl_usd"],
+                    row["id"],
+                ))
+            else:
+                cur.execute("""
+                    UPDATE signal_log
+                    SET entry_reached=%s, tp1_reached=%s, sl_reached=%s, setup_outcome=%s
+                    WHERE id=%s
+                """, (
+                    result["entry_reached"], result["tp1_reached"],
+                    result["sl_reached"], result["setup_outcome"],
+                    row["id"],
+                ))
         updated += 1
 
+    return updated
+
+
+def _paper_exec_fields(result: Dict, rr: float, paper: bool) -> Dict:
+    """Map the 72h replay onto a deterministic paper-execution result.
+
+    Paper only — live fills come from the exchange and are never synthesised here.
+    Conventions (conservative, fixed-TP; tune as needed):
+      • fill = price touched entry within 72h (entry_reached)
+      • win  = TP1 touched first        → +rr R
+      • loss = SL touched first         → −1 R
+      • TP & SL inside the same 1h bar  → assume SL first (loss)
+      • entry hit, neither in 72h       → time stop, flat $0
+      • risk/trade = ACCOUNT_CAPITAL × MAX_RISK_PER_TRADE
+    P&L is GROSS fixed-TP R (the ~breakeven-by-design /diagnose number); the
+    cost-netted *trailing* edge stays in guardrail.evaluate() / check_signal_log.
+    Returns {} for live, so only the setup-quality columns get written.
+    """
+    if int(paper) != 1:
+        return {}
+    if not result["entry_reached"]:
+        return {"filled": 0, "outcome": "unfilled", "pnl_usd": 0.0}
+    risk_usd = config.ACCOUNT_CAPITAL * config.MAX_RISK_PER_TRADE
+    tp1, sl = result["tp1_reached"], result["sl_reached"]
+    if tp1 and not sl:
+        outcome, pnl = "tp", risk_usd * rr
+    elif tp1 and sl:                        # same-bar TP/SL collision → conservative loss
+        outcome, pnl = "sl", -risk_usd
+    elif sl:
+        outcome, pnl = "sl", -risk_usd
+    else:                                   # entry hit, unresolved in 72h → time stop
+        outcome, pnl = "time_stop", 0.0
+    return {"filled": 1, "outcome": outcome, "pnl_usd": round(pnl, 2)}
+
+
+def backfill_paper_fills(paper: bool = True) -> int:
+    """One-shot, idempotent: populate the paper-execution funnel
+    (filled/outcome/pnl_usd) for signals that were already setup-resolved BEFORE
+    fill resolution existed. Derives from the stored entry/tp1/sl flags — no candle
+    re-walk. Matches only rows with filled IS NULL, so it no-ops once caught up.
+    """
+    if int(paper) != 1:
+        return 0
+    with perf._cur() as cur:
+        cur.execute("""
+            SELECT id, rr, entry_reached, tp1_reached, sl_reached
+            FROM signal_log
+            WHERE paper = %s AND setup_outcome IS NOT NULL AND filled IS NULL
+        """, (int(paper),))
+        rows = [dict(r) for r in cur.fetchall()]
+
+    updated = 0
+    for row in rows:
+        result = {"entry_reached": bool(row["entry_reached"]),
+                  "tp1_reached":   bool(row["tp1_reached"]),
+                  "sl_reached":    bool(row["sl_reached"])}
+        exec_ = _paper_exec_fields(result, float(row.get("rr") or 0.0), paper)
+        if not exec_:
+            continue
+        with perf._cur() as cur:
+            cur.execute(
+                "UPDATE signal_log SET filled=%s, outcome=%s, pnl_usd=%s WHERE id=%s",
+                (exec_["filled"], exec_["outcome"], exec_["pnl_usd"], row["id"]),
+            )
+        updated += 1
     return updated
 
 
@@ -364,6 +447,13 @@ def run_report_workers(paper: bool = True) -> None:
         print(f"[analytics] snapshot worker error: {e}", flush=True)
 
     try:
+        n_bf = backfill_paper_fills(paper)
+        if n_bf:
+            print(f"[analytics] paper fills backfilled: {n_bf}", flush=True)
+    except Exception as e:
+        print(f"[analytics] paper-fill backfill error: {e}", flush=True)
+
+    try:
         n_out = populate_outcomes(paper)
         if n_out:
             print(f"[analytics] outcomes computed: {n_out}", flush=True)
@@ -385,11 +475,12 @@ def build_edge_overview(paper: bool, days: int = 30, run_tag: Optional[str] = No
     dirs   = perf.edge_direction_stats(paper, days, run_tag=run_tag)["overall"]
     setup  = perf.edge_setup_quality(paper, days, run_tag)
 
-    total   = int(funnel["total"] or 0)
-    queued  = int(funnel["went_to_queue"] or 0)
-    filled  = int(funnel["filled"] or 0)
-    expired = int(funnel["expired"] or 0)
-    canc    = int(funnel["cancelled"] or 0)
+    total    = int(funnel["total"] or 0)
+    filled   = int(funnel["filled"] or 0)
+    resolved = int(funnel["resolved"] or 0)
+    canc     = int(funnel["cancelled"] or 0)
+    pending  = max(total - resolved - canc, 0)   # still inside their 72h window
+    no_fill  = max(resolved - filled, 0)         # matured, entry never retraced
     wins    = int(funnel["wins"] or 0)
     losses  = int(funnel["losses"] or 0)
     tstops  = int(funnel["time_stops"] or 0)
@@ -398,9 +489,9 @@ def build_edge_overview(paper: bool, days: int = 30, run_tag: Optional[str] = No
     mode    = "paper" if paper else "live"
     tag_label = run_tag or "all"
 
-    # Funnel rates
-    q_rate = f"{queued/total*100:.0f}%" if total else "—"
-    f_rate = f"{filled/queued*100:.0f}%" if queued else "—"
+    # Fill rate is judged over MATURED signals (filled / resolved), not raw
+    # total — signals still inside their 72h window haven't had a chance to fill.
+    f_rate = f"{filled/resolved*100:.0f}%" if resolved else "—"
 
     # Direction accuracy
     n4  = int(dirs["n_4h"] or 0)
@@ -462,9 +553,9 @@ def build_edge_overview(paper: bool, days: int = 30, run_tag: Optional[str] = No
         f"Since: {since}" if since else "",
         "",
         f"Generated:  {total}",
-        f"├ Queued:   {queued}  ({q_rate} → pending queue)",
-        f"│ ├ Filled: {filled}  ({f_rate} of queued)",
-        f"│ └ Expired:{expired}",
+        f"├ Filled:   {filled}  ({f_rate} of {resolved} matured)",
+        f"├ No-fill:  {no_fill}  (entry never retraced ≤72h)",
+        f"├ Pending:  {pending}  (inside 72h window)",
         f"└ Skipped:  {canc}  (gates: dedup/risk/distance)",
         "",
         *dir_lines,
@@ -642,37 +733,40 @@ def build_diagnose(paper: bool, run_tag: Optional[str] = None) -> str:
     exec_  = perf.diagnose_execution_stats(paper, run_tag=run_tag)
 
     total  = int(funnel["total"] or 0)
-    queued = int(funnel["went_to_queue"] or 0)
     filled = int(funnel["filled"] or 0)
-    expired= int(funnel["expired"] or 0)
 
     # ── Layer 1: Signal Funnel ────────────────────────────────────────────────
     lines.append("*Layer 1 — Signal Funnel*")
-    if queued == 0:
-        lines.append("  ⏳ No signals queued yet")
+    n_entry_hit = int(setup["n_entry_hit"] or 0)
+    n_resolved  = int(setup["n_resolved"] or 0)
+    no_entry_n  = int(setup["n_no_entry"] or 0)
+    if total == 0:
+        lines.append("  ⏳ No signals generated yet")
+    elif n_resolved < _N_SETUP:
+        # Paper fills resolve via the 72h replay; until a meaningful sample has
+        # matured, fill rate is dominated by still-pending signals — not a verdict.
+        lines.append(f"  ⏳ Fill rate warming up — {n_resolved}/{_N_SETUP} signals matured "
+                     f"past 72h ({filled} paper-filled)")
     else:
-        fill_rate = filled / queued * 100
-
-        # No-entry rate (signals that queued but expired without filling)
-        no_entry_n = int(setup["n_no_entry"] or 0)
-        n_resolved = int(setup["n_resolved"] or 0)
-        no_entry_rate = no_entry_n / n_resolved * 100 if n_resolved else None
+        # Judge fill rate over MATURED signals (entry-hit / resolved). filled/queued
+        # would be diluted by signals still inside their 72h window, so we avoid it.
+        fill_rate     = n_entry_hit / n_resolved * 100
+        no_entry_rate = no_entry_n / n_resolved * 100
 
         fill_icon = "✓" if fill_rate >= 20 else "✗"
-        lines.append(f"  Fill rate: {fill_icon} {fill_rate:.0f}% ({filled}/{queued})"
-                     + (" ≥20% healthy" if fill_rate >= 20 else " — entry too far from price"))
+        lines.append(f"  Fill rate: {fill_icon} {fill_rate:.0f}% ({n_entry_hit}/{n_resolved} matured)"
+                     + ("  ≥20% healthy" if fill_rate >= 20
+                        else "  — entries rarely retraced to fill"))
 
-        if no_entry_rate is not None:
-            ne_icon = "✗" if no_entry_rate > 65 else "✓"
-            lines.append(f"  No-entry rate: {ne_icon} {no_entry_rate:.0f}% ({no_entry_n}/{n_resolved} resolved)")
-            if no_entry_rate > 65:
-                issues_critical.append("fill rate: entry too far from price")
-                lines.append("  → reduce breakout distance or extend expiry window")
-            else:
-                working.append("fill rate")
-
-        if fill_rate < 20:
+        ne_icon = "✗" if no_entry_rate > 65 else "✓"
+        lines.append(f"  No-entry rate: {ne_icon} {no_entry_rate:.0f}% ({no_entry_n}/{n_resolved} resolved)")
+        if no_entry_rate > 65:
+            issues_critical.append("fill rate: entries rarely retrace to fill")
+            lines.append("  → reduce breakout distance or extend the 72h expiry window")
+        elif fill_rate < 20:
             issues_critical.append("fill rate <20%")
+        else:
+            working.append("fill rate")
 
     # ── Layer 2: Direction Accuracy ───────────────────────────────────────────
     lines.append("\n*Layer 2 — Direction Accuracy*")

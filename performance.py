@@ -547,7 +547,10 @@ def edge_funnel(paper: bool, days: int = 30, run_tag: Optional[str] = None) -> D
             SELECT
                 COUNT(*)                                                              AS total,
                 SUM(CASE WHEN stage IN ('queued','filled','expired') THEN 1 ELSE 0 END) AS went_to_queue,
-                SUM(CASE WHEN stage = 'filled'   THEN 1 ELSE 0 END)                  AS filled,
+                -- fills are marked on the `filled` column (paper resolution + live);
+                -- stage stays 'expired' for paper rows so Layer 3 counterfactual holds
+                SUM(CASE WHEN COALESCE(filled,0) = 1 THEN 1 ELSE 0 END)              AS filled,
+                COUNT(*) FILTER (WHERE setup_outcome IS NOT NULL)                    AS resolved,
                 SUM(CASE WHEN stage = 'expired'  THEN 1 ELSE 0 END)                  AS expired,
                 SUM(CASE WHEN stage = 'cancelled' THEN 1 ELSE 0 END)                 AS cancelled,
                 SUM(CASE WHEN skip_reason = 'near_miss' THEN 1 ELSE 0 END)           AS near_miss,
@@ -628,7 +631,7 @@ def edge_direction_stats(paper: bool, days: int = 30, group_by: Optional[str] = 
                 {group_expr}                                                           AS group_key,
                 COUNT(*)                                                               AS total,
                 SUM(CASE WHEN stage IN ('queued','filled','expired') THEN 1 ELSE 0 END) AS went_to_queue,
-                SUM(CASE WHEN stage = 'filled' THEN 1 ELSE 0 END)                     AS filled,
+                SUM(CASE WHEN COALESCE(filled,0) = 1 THEN 1 ELSE 0 END)               AS filled,
                 -- direction accuracy
                 COUNT(*) FILTER (WHERE dir_4h IS NOT NULL)                             AS n_4h,
                 SUM(CASE WHEN dir_4h = TRUE THEN 1 ELSE 0 END)                         AS ok_4h,
@@ -719,7 +722,7 @@ def edge_pairs_ranked(paper: bool, days: int = 30, run_tag: Optional[str] = None
                 pair,
                 COUNT(*)                                                               AS total,
                 SUM(CASE WHEN stage IN ('queued','filled','expired') THEN 1 ELSE 0 END) AS went_to_queue,
-                SUM(CASE WHEN stage = 'filled' THEN 1 ELSE 0 END)                     AS filled,
+                SUM(CASE WHEN COALESCE(filled,0) = 1 THEN 1 ELSE 0 END)               AS filled,
                 COUNT(*) FILTER (WHERE dir_4h IS NOT NULL)                             AS n_dir,
                 SUM(CASE WHEN dir_4h = TRUE THEN 1 ELSE 0 END)                         AS ok_dir,
                 SUM(CASE WHEN outcome = 'tp' THEN 1 ELSE 0 END)                        AS wins,
