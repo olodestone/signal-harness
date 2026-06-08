@@ -58,8 +58,9 @@ SL_COOLDOWN_AFTER_LOSSES = int(os.getenv("SL_COOLDOWN_AFTER_LOSSES", "2"))
 
 # ── Pair Blacklist ────────────────────────────────────────────────────────────
 # Pairs permanently excluded from trading regardless of watchlist source.
-# Defaults block micro-caps with manipulable sweeps (LAB, LUNC).
-_DEFAULT_BLACKLIST = "LAB/USDT,LUNC/USDT,ASTER/USDT,PENGU/USDT,KCS/USDT,UB/USDT,SHARE/USDT"
+# Defaults block micro-caps with manipulable sweeps (LAB, LUNC) and BTC, which the
+# OOS test found cost-bound / flat at 4h (results_oos.md, results_higher_tf.md).
+_DEFAULT_BLACKLIST = "BTC/USDT,LAB/USDT,LUNC/USDT,ASTER/USDT,PENGU/USDT,KCS/USDT,UB/USDT,SHARE/USDT"
 PAIR_BLACKLIST     = set(
     p.strip()
     for p in os.getenv("PAIR_BLACKLIST", _DEFAULT_BLACKLIST).split(",")
@@ -68,8 +69,9 @@ PAIR_BLACKLIST     = set(
 
 # ── Confidence Gate ───────────────────────────────────────────────────────────
 # Only trade signals that score >= this on the 1-100 confidence scale.
-# 70 = medium quality minimum; raise to 80+ for fewer, higher-conviction trades.
-MIN_CONFIDENCE     = int(os.getenv("MIN_CONFIDENCE", "70"))
+# 55 = effectively no gate (admits the whole basket): the OOS test found confidence
+# is NOT a useful filter (70-79 band == 80+), so don't gate higher during validation.
+MIN_CONFIDENCE     = int(os.getenv("MIN_CONFIDENCE", "55"))
 
 # ── Pairs ─────────────────────────────────────────────────────────────────────
 # CORE list — 20 established majors that are ALWAYS scanned, regardless of their
