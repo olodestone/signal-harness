@@ -23,14 +23,17 @@ MIN_VOLUME_USDT   = "10000000"
 MIN_PAIR_AGE_DAYS = "300"
 
 # ── Timeframes fed to generate_signal ─────────────────────────────────────────
-ENTRY_TF          = "15m"
-CONFIRM_TF        = "1h"
-TREND_TF          = "4h"
+# OOS-validated stack (backtest/results_oos.md + results_higher_tf.md): 4h entry,
+# everything else 1d. 15m was tested and REJECTED — net-negative after costs
+# (tight stops → fatal cost drag); 4h's wide stops are what let the edge survive.
+ENTRY_TF          = "4h"
+CONFIRM_TF        = "1d"
+TREND_TF          = "1d"
 BIAS_TF           = "1d"
 
 # ── Loop + analytics segmentation ─────────────────────────────────────────────
 SCAN_INTERVAL_SEC = "900"
-RUN_TAG           = "v1"
+RUN_TAG           = "v2"   # v2 = validated 4h stack; v1 was the unvalidated 15m config
 
 # DATABASE_URL is injected by the Railway PostgreSQL addon.
 # TG_TOKEN / TG_CHAT_ID: set as secrets to enable /edge + /diagnose over Telegram.
