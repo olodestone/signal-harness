@@ -8,6 +8,9 @@ restartPolicyMaxRetries = 10
 
 [environments.production]
 [environments.production.variables]
+# ⚠ Railway does NOT reliably apply these [variables] — deleting the dashboard
+# RUN_TAG fell through to config.py's default, not the value here. Treat config.py
+# defaults as the source of truth; set genuine overrides in the Railway dashboard.
 PYTHONUNBUFFERED = "1"
 PAPER_TRADING    = "true"
 
