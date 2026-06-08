@@ -138,5 +138,39 @@ TG_CHAT_ID         = os.getenv("TG_CHAT_ID", "")
 # value silently overrides and hides this).
 RUN_TAG            = os.getenv("RUN_TAG", "v5")
 
+# ── Strategy Stacks (multi-timeframe) ─────────────────────────────────────────
+# The harness runs EACH stack below over every pair on every scan and logs its
+# signals under its OWN run_tag, so /edge, /diagnose and /stats keep them in
+# separate buckets (pass the tag, e.g. `/edge v6`).
+#
+# Stack 1 — the OOS-validated 4h swing. Driven by ENTRY_TF/CONFIRM_TF/TREND_TF/
+#   BIAS_TF + RUN_TAG above, so it stays byte-for-byte the config you already run.
+#   Authoritative; do not disturb.
+# Stack 2 — the multi-timeframe (MTF) probe: 4h bias → 1h trigger → 15m entry.
+#   It is the SAME strategy functions on a faster TF mapping. This is the 15m
+#   stack that produced the v1/v2/v4 "junk" slices, so it is an EXPERIMENT
+#   (tag v6), NOT validated — a different run_tag keeps it out of the clean v5
+#   slice automatically. Disable with ENABLE_MTF=false. notify defaults OFF so the
+#   faster 15m cadence doesn't spam Telegram — review the probe via `/edge v6`.
+from collections import namedtuple
+
+Stack = namedtuple("Stack", "run_tag entry_tf confirm_tf trend_tf bias_tf label notify")
+
+ENABLE_MTF = os.getenv("ENABLE_MTF", "true").lower() == "true"
+
+STACKS = [
+    Stack(RUN_TAG, ENTRY_TF, CONFIRM_TF, TREND_TF, BIAS_TF, "swing_4h", True),
+]
+if ENABLE_MTF:
+    STACKS.append(Stack(
+        run_tag    = os.getenv("MTF_RUN_TAG",    "v6"),
+        entry_tf   = os.getenv("MTF_ENTRY_TF",   "15m"),
+        confirm_tf = os.getenv("MTF_CONFIRM_TF", "1h"),
+        trend_tf   = os.getenv("MTF_TREND_TF",   "4h"),
+        bias_tf    = os.getenv("MTF_BIAS_TF",    "4h"),
+        label      = "mtf_15m",
+        notify     = os.getenv("MTF_NOTIFY", "false").lower() == "true",
+    ))
+
 # ── Loop ──────────────────────────────────────────────────────────────────────
 SCAN_INTERVAL_SEC  = int(os.getenv("SCAN_INTERVAL_SEC", "900"))   # 15 min
