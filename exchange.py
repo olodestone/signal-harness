@@ -4,6 +4,7 @@ Exchange abstraction — fetches OHLCV and price data.
 Paper mode uses KuCoin public REST API (no API key needed).
 Live mode uses the configured exchange with API credentials.
 """
+import os
 import re
 import time
 import requests
@@ -17,6 +18,15 @@ _KC_URL = "https://api.kucoin.com/api/v1"
 # Minimum gap between consecutive KuCoin requests to avoid 429s
 _RATE_DELAY    = 0.25
 _last_req_ts: float = 0.0
+
+# Range fetches (the guardrail's 15m burst + the outcome resolver) can come back
+# EMPTY under a sliding-window soft-throttle — KuCoin returns code 200000 with no
+# data rather than a 429, especially from datacenter IPs when a burst of requests
+# (scan + guardrail) lands in a short window. That's the "insufficient resolved
+# (0/N)" symptom on Railway (works fine run standalone). Back off + retry on empty
+# instead of silently giving up. Tunable via env.
+_RANGE_RETRIES     = int(os.getenv("OHLCV_RANGE_RETRIES", "5"))
+_RANGE_BACKOFF_CAP = float(os.getenv("OHLCV_RANGE_BACKOFF_CAP", "10"))
 
 
 def _throttle():
@@ -269,7 +279,8 @@ def fetch_ohlcv_between(
     """
     kc_sym   = _to_kc(symbol)
     interval = _TF_MAP.get(tf, tf)
-    for attempt in range(3):
+    last = _RANGE_RETRIES - 1
+    for attempt in range(_RANGE_RETRIES):
         try:
             _throttle()
             resp = requests.get(
@@ -283,10 +294,13 @@ def fetch_ohlcv_between(
                 timeout=15,
             )
             if resp.status_code == 429:
-                wait = 2 ** attempt * 2
-                print(f"[exchange] 429 on {symbol} {tf} range — backing off {wait}s")
-                time.sleep(wait)
-                continue
+                if attempt < last:
+                    wait = min(2 ** attempt * 2, _RANGE_BACKOFF_CAP)
+                    print(f"[exchange] 429 on {symbol} {tf} range — backing off {wait:.0f}s")
+                    time.sleep(wait)
+                    continue
+                print(f"[exchange] 429 on {symbol} {tf} range — gave up after {_RANGE_RETRIES} tries")
+                return None
             resp.raise_for_status()
             data = resp.json()
             if data.get("code") != "200000":
@@ -294,6 +308,12 @@ def fetch_ohlcv_between(
                 return None
             rows = list(reversed(data["data"]))   # oldest-first
             if not rows:
+                # Empty under a burst is a soft-throttle, not a truly empty range —
+                # back off and retry rather than silently returning None.
+                if attempt < last:
+                    wait = min(2 ** attempt * 2, _RANGE_BACKOFF_CAP)
+                    time.sleep(wait)
+                    continue
                 return None
             df = pd.DataFrame(rows, columns=["time", "open", "close", "high", "low", "volume", "amount"])
             df = df[["time", "open", "high", "low", "close", "volume"]].astype(
@@ -303,7 +323,7 @@ def fetch_ohlcv_between(
             df["time"] = pd.to_datetime(df["time"], unit="s")
             return df.tail(limit).reset_index(drop=True)
         except Exception as e:
-            if attempt == 2:
+            if attempt == last:
                 print(f"[exchange] KuCoin OHLCV range {symbol} {tf}: {e}")
             else:
                 time.sleep(1)
