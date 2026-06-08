@@ -130,10 +130,11 @@ TG_CHAT_ID         = os.getenv("TG_CHAT_ID", "")
 # ── Run tag ───────────────────────────────────────────────────────────────────
 # Label stored on every trade AND signal — bump on any config change that should
 # be analysed separately, so /edge, /diagnose and /stats can isolate the new regime
-# from the old. v3 = clean 4h validated slice; v1/v2 were 15m-contaminated by a
-# dashboard ENTRY_TF=15m override. This default is authoritative — bump it HERE,
-# not in the dashboard (a dashboard value silently overrides and hides this).
-RUN_TAG            = os.getenv("RUN_TAG", "v3")
+# from the old. v5 = clean 4h validated slice; v1/v2/v4 were all 15m (dashboard
+# ENTRY_TF=15m override, then the 15m code-default once the dashboard was cleared).
+# This default is authoritative — bump it HERE, not in the dashboard (a dashboard
+# value silently overrides and hides this).
+RUN_TAG            = os.getenv("RUN_TAG", "v5")
 
 # ── Loop ──────────────────────────────────────────────────────────────────────
 SCAN_INTERVAL_SEC  = int(os.getenv("SCAN_INTERVAL_SEC", "900"))   # 15 min

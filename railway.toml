@@ -36,7 +36,7 @@ BIAS_TF           = "1d"
 
 # ── Loop + analytics segmentation ─────────────────────────────────────────────
 SCAN_INTERVAL_SEC = "900"
-RUN_TAG           = "v3"   # v3 = clean 4h slice after removing the dashboard ENTRY_TF=15m override; v1/v2 were 15m-contaminated
+RUN_TAG           = "v5"   # v5 = clean 4h slice (config.py default is authoritative; railway.toml vars are ignored). v1/v2/v4 were 15m
 
 # DATABASE_URL is injected by the Railway PostgreSQL addon.
 # TG_TOKEN / TG_CHAT_ID: set as secrets to enable /edge + /diagnose over Telegram.
