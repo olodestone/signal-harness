@@ -8,6 +8,9 @@ restartPolicyMaxRetries = 10
 
 [environments.production]
 [environments.production.variables]
+# ⚠ Railway does NOT reliably apply these [variables] — deleting the dashboard
+# RUN_TAG fell through to config.py's default, not the value here. Treat config.py
+# defaults as the source of truth; set genuine overrides in the Railway dashboard.
 PYTHONUNBUFFERED = "1"
 PAPER_TRADING    = "true"
 
@@ -33,7 +36,7 @@ BIAS_TF           = "1d"
 
 # ── Loop + analytics segmentation ─────────────────────────────────────────────
 SCAN_INTERVAL_SEC = "900"
-RUN_TAG           = "v2"   # v2 = validated 4h stack; v1 was the unvalidated 15m config
+RUN_TAG           = "v5"   # v5 = clean 4h slice (config.py default is authoritative; railway.toml vars are ignored). v1/v2/v4 were 15m
 
 # DATABASE_URL is injected by the Railway PostgreSQL addon.
 # TG_TOKEN / TG_CHAT_ID: set as secrets to enable /edge + /diagnose over Telegram.

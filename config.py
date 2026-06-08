@@ -58,8 +58,9 @@ SL_COOLDOWN_AFTER_LOSSES = int(os.getenv("SL_COOLDOWN_AFTER_LOSSES", "2"))
 
 # ── Pair Blacklist ────────────────────────────────────────────────────────────
 # Pairs permanently excluded from trading regardless of watchlist source.
-# Defaults block micro-caps with manipulable sweeps (LAB, LUNC).
-_DEFAULT_BLACKLIST = "LAB/USDT,LUNC/USDT,ASTER/USDT,PENGU/USDT,KCS/USDT,UB/USDT,SHARE/USDT"
+# Defaults block micro-caps with manipulable sweeps (LAB, LUNC) and BTC, which the
+# OOS test found cost-bound / flat at 4h (results_oos.md, results_higher_tf.md).
+_DEFAULT_BLACKLIST = "BTC/USDT,LAB/USDT,LUNC/USDT,ASTER/USDT,PENGU/USDT,KCS/USDT,UB/USDT,SHARE/USDT"
 PAIR_BLACKLIST     = set(
     p.strip()
     for p in os.getenv("PAIR_BLACKLIST", _DEFAULT_BLACKLIST).split(",")
@@ -68,8 +69,9 @@ PAIR_BLACKLIST     = set(
 
 # ── Confidence Gate ───────────────────────────────────────────────────────────
 # Only trade signals that score >= this on the 1-100 confidence scale.
-# 70 = medium quality minimum; raise to 80+ for fewer, higher-conviction trades.
-MIN_CONFIDENCE     = int(os.getenv("MIN_CONFIDENCE", "70"))
+# 55 = effectively no gate (admits the whole basket): the OOS test found confidence
+# is NOT a useful filter (70-79 band == 80+), so don't gate higher during validation.
+MIN_CONFIDENCE     = int(os.getenv("MIN_CONFIDENCE", "55"))
 
 # ── Pairs ─────────────────────────────────────────────────────────────────────
 # CORE list — 20 established majors that are ALWAYS scanned, regardless of their
@@ -113,9 +115,14 @@ MIN_VOLUME_USDT    = float(os.getenv("MIN_VOLUME_USDT", "10000000"))  # 24h vol 
 MIN_PAIR_AGE_DAYS  = int(os.getenv("MIN_PAIR_AGE_DAYS", "300"))       # min 1d history for a dynamic add (anti-pump-listing)
 
 # ── Timeframes ────────────────────────────────────────────────────────────────
-ENTRY_TF           = os.getenv("ENTRY_TF",  "15m")
-CONFIRM_TF         = os.getenv("CONFIRM_TF", "1h")
-TREND_TF           = os.getenv("TREND_TF",  "4h")
+# Defaults = the OOS-validated stack (backtest/results_oos.md): 4h entry, 1d
+# confirm/trend/bias. These code defaults are the SOURCE OF TRUTH: railway.toml
+# [variables] are NOT reliably applied by Railway (proven — deleting the dashboard
+# RUN_TAG fell back to this default, not the toml value). Override via the Railway
+# DASHBOARD only if you must, and confirm against the startup CONFIG banner.
+ENTRY_TF           = os.getenv("ENTRY_TF",  "4h")
+CONFIRM_TF         = os.getenv("CONFIRM_TF", "1d")
+TREND_TF           = os.getenv("TREND_TF",  "1d")
 BIAS_TF            = os.getenv("BIAS_TF",   "1d")
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
@@ -125,9 +132,11 @@ TG_CHAT_ID         = os.getenv("TG_CHAT_ID", "")
 # ── Run tag ───────────────────────────────────────────────────────────────────
 # Label stored on every trade AND signal — bump on any config change that should
 # be analysed separately, so /edge, /diagnose and /stats can isolate the new regime
-# from the old. v4 = FILL_TIMEOUT_SEC disabled (no 30-min stale-cancel). Set the same
-# value in Railway env before deploying.
-RUN_TAG            = os.getenv("RUN_TAG", "v4")
+# from the old. v5 = clean 4h validated slice; v1/v2/v4 were all 15m (dashboard
+# ENTRY_TF=15m override, then the 15m code-default once the dashboard was cleared).
+# This default is authoritative — bump it HERE, not in the dashboard (a dashboard
+# value silently overrides and hides this).
+RUN_TAG            = os.getenv("RUN_TAG", "v5")
 
 # ── Loop ──────────────────────────────────────────────────────────────────────
 SCAN_INTERVAL_SEC  = int(os.getenv("SCAN_INTERVAL_SEC", "900"))   # 15 min
