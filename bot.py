@@ -125,6 +125,29 @@ def _scan_once() -> int:
     return logged
 
 
+def _log_config() -> None:
+    """Print the RESOLVED config at startup — the only authoritative record of what's
+    actually running. Railway env vars, a stray .env (config.py uses load_dotenv
+    override=True), and config.py's own defaults can all disagree; this shows the
+    winner. '⚠' marks any value that diverges from the OOS-validated config
+    (backtest/results_oos.md): 4h/1d/1d/1d, no confidence gate, exclude BTC."""
+    c = config
+    ok = lambda cond: "✓" if cond else "⚠"
+    btc_excluded = "BTC/USDT" in c.PAIR_BLACKLIST
+    print(
+        "[bot] RESOLVED CONFIG (✓/⚠ vs OOS-validated):\n"
+        f"      run_tag={c.RUN_TAG}  paper={c.PAPER_TRADING}\n"
+        f"      ENTRY_TF={c.ENTRY_TF} {ok(c.ENTRY_TF=='4h')}  CONFIRM_TF={c.CONFIRM_TF} {ok(c.CONFIRM_TF=='1d')}  "
+        f"TREND_TF={c.TREND_TF} {ok(c.TREND_TF=='1d')}  BIAS_TF={c.BIAS_TF} {ok(c.BIAS_TF=='1d')}   "
+        "(validated 4h/1d/1d/1d)\n"
+        f"      MIN_CONFIDENCE={c.MIN_CONFIDENCE} {ok(c.MIN_CONFIDENCE<=55)} (validated: no conf gate)  "
+        f"BTC_excluded={btc_excluded} {ok(btc_excluded)} (validated: exclude BTC)\n"
+        f"      scan={c.SCAN_INTERVAL_SEC}s  max_pairs={c.MAX_PAIRS}  dynamic={c.DYNAMIC_DISCOVERY}  "
+        f"min_rr={c.MIN_RR}  risk/trade={c.MAX_RISK_PER_TRADE}  capital=${c.ACCOUNT_CAPITAL:.0f}",
+        flush=True,
+    )
+
+
 def main() -> None:
     perf.init_db()
 
@@ -143,6 +166,7 @@ def main() -> None:
     print(f"[bot] Signal Harness up — run_tag={config.RUN_TAG}, "
           f"scan every {config.SCAN_INTERVAL_SEC}s. No execution (analytics only).",
           flush=True)
+    _log_config()
 
     while not stopping.is_set():
         if paused.is_set():
